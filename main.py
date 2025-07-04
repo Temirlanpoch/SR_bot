@@ -11,7 +11,7 @@ load_dotenv()
 scheduler = AsyncIOScheduler()
 scheduler.start()
 
-dp.include_router(uptime_router)
+from tele_utils import bot, dp, start_bot, stop_bot
 
 async def periodic_check():
     while True:
