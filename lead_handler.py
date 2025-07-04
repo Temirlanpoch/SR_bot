@@ -1,57 +1,69 @@
+# lead_handler.py
+
 import os
 import aiohttp
+import asyncio
 from bs4 import BeautifulSoup
-from tele_utils import notify_new_lead
+from datetime import datetime
+from tele_utils import notify_new_lead, notify_missed_lead, notify_error
+from utils import extract_name, close_popups_and_accept
 
 CRM_LOGIN = os.getenv("CRM_LOGIN")
-CRM_PASS = os.getenv("CRM_PASS")
-CRM_URL = os.getenv("CRM_URL", "https://crm.smartremont.kz")
+CRM_PASSWORD = os.getenv("CRM_PASSWORD")
+CRM_BASE_URL = "https://crm.smartremont.kz"
 
-session = None
-accepted_ids = set()
+session_cookies = None
+
 
 async def login():
-    global session
-    session = aiohttp.ClientSession()
-    payload = {
-        "login": CRM_LOGIN,
-        "password": CRM_PASS,
-        "is_mobile": False,
-        "os": "Windows",
-        "user_agent": "Chrome"
-    }
-    async with session.post(f"{CRM_URL}/api/login", json=payload) as resp:
-        return await resp.json()
+    global session_cookies
+    async with aiohttp.ClientSession() as session:
+        payload = {
+            "login": CRM_LOGIN,
+            "password": CRM_PASSWORD
+        }
+
+        async with session.post(f"{CRM_BASE_URL}/api/login", json=payload) as resp:
+            content_type = resp.headers.get('Content-Type', '')
+            if 'application/json' not in content_type:
+                text = await resp.text()
+                print("⚠️ Ожидался JSON, но получен HTML. Возможная ошибка авторизации.")
+                print(text[:1000])  # вывод первых 1000 символов HTML
+                raise ValueError("Сервер вернул не JSON — возможно, ошибка авторизации или капча")
+
+            data = await resp.json()
+            session_cookies = session.cookie_jar.filter_cookies(CRM_BASE_URL)
+            return data
+
 
 async def fetch_leads():
-    async with session.get(f"{CRM_URL}/leads") as resp:
-        html = await resp.text()
-        soup = BeautifulSoup(html, "html.parser")
-        blocks = soup.select(".deal-card")
-        leads = []
-        for block in blocks:
-            if "В работе" in block.text:
-                deal_id = block.get("data-id")
-                if deal_id not in accepted_ids:
-                    name = block.select_one(".client-name").text.strip()
-                    object_info = block.select_one(".object-info").text.strip()
-                    date = block.select_one(".date").text.strip()
-                    source = block.select_one(".source").text.strip()
-                    link = f"{CRM_URL}/deal/{deal_id}"
-                    leads.append({
-                        "id": deal_id,
-                        "name": name,
-                        "object": object_info,
-                        "date": date,
-                        "source": source,
-                        "link": link
-                    })
-        return leads
+    global session_cookies
+    async with aiohttp.ClientSession(cookies=session_cookies) as session:
+        async with session.get(f"{CRM_BASE_URL}/api/leads") as resp:
+            return await resp.json()
+
 
 async def check_and_handle_leads():
-    if session is None:
+    try:
         await login()
-    leads = await fetch_leads()
-    for lead in leads:
-        await notify_new_lead(lead)
-        accepted_ids.add(lead["id"])
+        leads = await fetch_leads()
+
+        for lead in leads.get("items", []):
+            lead_id = lead["id"]
+            status = lead.get("status", "").lower()
+            assigned = lead.get("assigned_to_user")
+
+            # Пропускаем, если лид уже в работе
+            if status == "в работе" and assigned:
+                continue
+
+            accepted = await close_popups_and_accept(lead_id)
+
+            if accepted:
+                await notify_new_lead(lead)
+            else:
+                await notify_missed_lead(lead)
+
+    except Exception as e:
+        await notify_error(str(e))
+        print(f"Ошибка в check_and_handle_leads: {e}")
