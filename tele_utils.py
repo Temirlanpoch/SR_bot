@@ -1,67 +1,57 @@
-import asyncio
-from datetime import datetime
-from aiogram import Bot, Dispatcher, F
+import logging
+from aiogram import Bot, Dispatcher, Router
 from aiogram.types import Message
+from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime, timezone, timedelta
+import os
 
-TELEGRAM_TOKEN = "8102338984:AAF6Qr6M-TCiNVzzQf9wLyZ_fkGOqgQLXKk"
-TELEGRAM_CHAT_ID = "701350220"
+TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")  # Куда отправлять уведомления
 
-bot = Bot(token=TELEGRAM_TOKEN)
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
-scheduler = AsyncIOScheduler()
-start_time = datetime.now()
 
+# Стартовое время запуска
+start_time = datetime.now(timezone(timedelta(hours=5)))
 
-async def send_lead_notification(lead: dict, missed: bool = False):
-    status = "❌ Упущен лид" if missed else f"📌 Лид №{lead['id']} принят!"
-    text = f"""\
-{status}
-👤 {lead.get('name', 'Неизвестно')}
-🏙️ {lead.get('complex', 'Неизвестно')} – КВ {lead.get('flat', '–')}
-📅 {lead.get('date', '—')}
-🛰️ Источник: {lead.get('source', '—')}
-💬 Комментарий: {lead.get('comment', '—')}
-🔗 https://crm.smartremont.kz/deal/{lead['id']}
-"""
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
+async def notify_new_lead(lead: dict, missed=False):
+    status = "❌ <b>УПУЩЕН</b>" if missed else "📌 Лид принят"
+    comment = lead.get("comment", "—")
 
-
-async def send_daily_report(accepted_leads: list, missed_leads: list):
-    text = f"""📊 Отчёт за {datetime.now().date().strftime('%d.%m.%Y')}:
-
-✅ Принято: {len(accepted_leads)} шт.
-❌ Упущено: {len(missed_leads)} шт.
-"""
-    if accepted_leads:
-        text += "\n✅ Принятые:\n" + "\n".join(
-            [f"• №{lead['id']} – {lead.get('name', '')}" for lead in accepted_leads]
-        )
-
-    if missed_leads:
-        text += "\n\n❌ Упущенные:\n" + "\n".join(
-            [f"• №{lead['id']} – {lead.get('name', '')}" for lead in missed_leads]
-        )
-
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text)
-
-
-@dp.message(F.text == "/status")
-async def handle_status(msg: Message):
-    uptime = datetime.now() - start_time
-    hours, remainder = divmod(uptime.seconds, 3600)
-    minutes = remainder // 60
-    await msg.answer(
-        f"🤖 Бот активен с {start_time.strftime('%H:%M:%S')} ⏱️ Аптайм: {hours} ч {minutes} мин."
+    text = (
+        f"{status} №<b>{lead['id']}</b>\n"
+        f"👤 <b>{lead['client']}</b>\n"
+        f"🏙️ <b>{lead['apartment']}</b>\n"
+        f"📅 <b>{lead['date']}</b>\n"
+        f"🛰️ Источник: <b>{lead['source']}</b>\n"
+        f"💬 Комментарий: <i>{comment}</i>\n"
+        f"🔗 <a href='https://crm.smartremont.kz/deal/{lead['id']}'>Открыть в CRM</a>"
     )
 
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=text)
+    except Exception as e:
+        logging.error(f"Ошибка при отправке уведомления: {e}")
 
-def start_bot():
-    scheduler.start()
-    print("✅ Бот запущен.")
+async def send_status():
+    now = datetime.now(timezone(timedelta(hours=5)))
+    diff = now - start_time
+    hours, remainder = divmod(diff.total_seconds(), 3600)
+    minutes = remainder // 60
+    uptime = f"{int(hours)} ч {int(minutes)} мин"
 
+    msg = (
+        f"🟢 Бот активен!\n"
+        f"⏱️ Аптайм: <b>{uptime}</b>\n"
+        f"🚀 Старт был: <b>{start_time.strftime('%H:%M:%S')}</b>"
+    )
 
-def stop_bot():
-    scheduler.shutdown()
-    print("⛔ Бот остановлен.")
+    await bot.send_message(chat_id=CHAT_ID, text=msg)
+
+async def start_bot():
+    logging.info("Запуск бота...")
+
+async def stop_bot():
+    logging.info("Остановка бота...")
+    await bot.session.close()
