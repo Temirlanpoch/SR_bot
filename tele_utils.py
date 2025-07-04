@@ -1,57 +1,65 @@
-import logging
-from aiogram import Bot, Dispatcher, Router
+import time
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import Message
-from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from datetime import datetime, timezone, timedelta
-import os
+from aiogram.utils.markdown import hbold
+from aiogram import Router
 
-TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")  # Куда отправлять уведомления
+TOKEN = "8102338984:AAF6Qr6M-TCiNVzzQf9wLyZ_fkGOqgQLXKk"
+ADMIN_CHAT_ID = "701350220"
 
-bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=TOKEN, parse_mode="HTML")
 dp = Dispatcher(storage=MemoryStorage())
+uptime_router = Router()
 
-# Стартовое время запуска
-start_time = datetime.now(timezone(timedelta(hours=5)))
+# Засекаем время запуска
+start_time = time.time()
 
-async def notify_new_lead(lead: dict, missed=False):
-    status = "❌ <b>УПУЩЕН</b>" if missed else "📌 Лид принят"
-    comment = lead.get("comment", "—")
-
-    text = (
-        f"{status} №<b>{lead['id']}</b>\n"
-        f"👤 <b>{lead['client']}</b>\n"
-        f"🏙️ <b>{lead['apartment']}</b>\n"
-        f"📅 <b>{lead['date']}</b>\n"
-        f"🛰️ Источник: <b>{lead['source']}</b>\n"
-        f"💬 Комментарий: <i>{comment}</i>\n"
-        f"🔗 <a href='https://crm.smartremont.kz/deal/{lead['id']}'>Открыть в CRM</a>"
+# ⏱️ Команда /status
+@uptime_router.message(F.text == "/status")
+async def status_handler(message: Message):
+    uptime_seconds = int(time.time() - start_time)
+    hours, remainder = divmod(uptime_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    await message.reply(
+        f"🤖 Бот работает уже: {hours}ч {minutes}м {seconds}с\n🕒 С {time.strftime('%d.%m.%Y %H:%M:%S', time.localtime(start_time))}"
     )
 
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text=text)
-    except Exception as e:
-        logging.error(f"Ошибка при отправке уведомления: {e}")
-
-async def send_status():
-    now = datetime.now(timezone(timedelta(hours=5)))
-    diff = now - start_time
-    hours, remainder = divmod(diff.total_seconds(), 3600)
-    minutes = remainder // 60
-    uptime = f"{int(hours)} ч {int(minutes)} мин"
-
-    msg = (
-        f"🟢 Бот активен!\n"
-        f"⏱️ Аптайм: <b>{uptime}</b>\n"
-        f"🚀 Старт был: <b>{start_time.strftime('%H:%M:%S')}</b>"
+# 📥 Уведомление о принятом лиде
+async def notify_new_lead(lead: dict):
+    message = (
+        f"📌 Лид №{lead['id']} принят!\n"
+        f"👤 {lead['name']}\n"
+        f"🏙️ {lead.get('housing_name', '—')} – КВ {lead.get('apartment_number', '—')}\n"
+        f"📅 {lead.get('date', '—')}\n"
+        f"🛰️ Источник: {lead.get('source', '—')}\n"
+        f"💬 {lead.get('comment', 'Комментарий не указан')}\n"
+        f"🔗 https://crm.smartremont.kz/deal/{lead['id']}"
     )
+    await bot.send_message(ADMIN_CHAT_ID, message)
 
-    await bot.send_message(chat_id=CHAT_ID, text=msg)
+# ⚠️ Уведомление об упущенном лиде
+async def notify_missed_lead(lead: dict):
+    message = (
+        f"⚠️ <b>Лид №{lead['id']} упущен!</b>\n"
+        f"👤 {lead['name']}\n"
+        f"🏙️ {lead.get('housing_name', '—')} – КВ {lead.get('apartment_number', '—')}\n"
+        f"📅 {lead.get('date', '—')}\n"
+        f"🛰️ Источник: {lead.get('source', '—')}\n"
+        f"💬 {lead.get('comment', 'Комментарий не указан')}\n"
+        f"🔗 https://crm.smartremont.kz/deal/{lead['id']}"
+    )
+    await bot.send_message(ADMIN_CHAT_ID, message)
 
+# ❌ Уведомление об ошибке
+async def notify_error(text: str):
+    await bot.send_message(ADMIN_CHAT_ID, f"❌ Ошибка: {text}")
+
+# 🔄 Запуск бота
 async def start_bot():
-    logging.info("Запуск бота...")
+    dp.include_router(uptime_router)
+    await dp.start_polling(bot)
 
+# ⛔ Остановка
 async def stop_bot():
-    logging.info("Остановка бота...")
     await bot.session.close()
